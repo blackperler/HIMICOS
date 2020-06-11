@@ -1,0 +1,199 @@
+
+=head1 DESCRIPTION
+
+This set of modules allows easy set up of a solver for parameter identification problems. We focus on 1D diffusion boundary-value problems, or even models of hydrogen diffusion in metals. Some tools serve for solving BVPs, ODEs, algebraic equations, numerical integration, interpolation, etc. The general solver applies the two-layer time scheme, calling the user routines for progressing to the next time layer, initialization, finalization, reading data for comparance, etc. Real parameters are randomly chosen from the unit cube, integer parameters are randomly chosen from 0-9. User routine transforms that to model parameters.
+
+The idea is to create easily a task generator for random search of parameters by comparing model data with measured curves. This generator can be used on PCs, clusters using MPI or OpenMP, or - the most suitable choice - Grid systems (e.g. B<BOINC>). Usually a single task is solved quickly, including reading experimental data and evaluating the difference. Tasks are comletely independent; later, if threshold would react to results, they will be loosely connected. Anyway, this paradigm best fits the grid computing. 
+
+=head1 MODULES AND ROUTINES
+
+=head2 The SOLVER
+
+The B<SOLVER> program is a client part and solves one task if launched. We assume that its code need not to be changed. What it does is generating the given number of random numbers, real or integer, call the user provided initializer, and then solve the problem in time step by step calling the user provided proceeder. At each step the data for comparing are produced by the user provided functions. Then it asks the user provided routine to get data and compares two curves in a chosen fuunctional space. Depending on the user choice, either the normed norm of the difference is returned and model data are saved to file, or the result is compared with the user provided threshold and only if it is better (less) the data are saved and a true value (1) is returned. In any case the generated values are returned also.
+
+There are a few solvers: B<SOLVER0> for non-evolutionary problems like F(p)=J with p being a vector of parameters and J for a measured value;
+
+B<SOLVER1> for non-differential evolutionary problems like F(t,p)=J with p being a vector of parameters and J for a measured function;
+
+B<SOLVER2> for two-layer evolutionary problems, including diffusion problems. This case is described here, differences for other cases are described separately.
+
+B<SOLVERn> for multi-layer evolutionary problems; up to the given number of time layers are passed to the user proceeder function.
+
+B<SOLVERinf> for all-layer evolutionary problems; all time layers calculated so far are passed to the user proceeder function.
+
+
+=head2 The USER module
+
+The USER module must be provided by the user and must contain some variables and routines. Templates and examples are hoped to be helpful in creating your own modules. The head of the module must be the same as it is in templates: do not change it. Below we describe public variables and routines and the logic of interaction between the module and the solver.
+
+=head3 Public variables
+
+Variables exported by the module are: B<N_params>, B<N_int_params>, B<params>, B<int_params>, B<n_unknowns>, B<NOP>, B<threshold>, B<ex_data>, B<norming_method>, B<space>, B<dt> 
+
+The first two integers describe the amount of real and integer parameters; next come two 1D arrays of these sizes to contain that parameters. n_unknowns is the number of variables of the numerical problem; this is size of the spatial grid plus all other variables. For example, imagine the model of shrinking core dehydriding, with spatial distribution of H concentration and the free boundary. So size of the grid for numerical distribution plus 1 is the number of variables.
+
+B<NOP> means Number of Points and is just the size of the grid. Next comes the B<threshold>; if positive, it is the lowest normed norm of difference between the model and the experimental curves to classify the result as a good one; if negative, it asks to return the result and save model data regardless of its quality. B<ex_data> is an array for the experimental data; it is 2D must contain two columns: one for time or other x-variable, the other for the measured quantity. B<norming_method> is the functional (Banach) space for experimental curves. Norm of this space is used to norm the norm of the difference between experimental and model curves (chosen by the space variable). So the quality of approximation is \|E(t)-M(t)\|_1 / \|E(t)\|_2, where \|\|_1 is chosen by space, \|\|_2 is chosen by norming_method, M(t) is the model curve, E(t) stands for the experimental one. At the moment possible values for either space or norming_method can be 'L2', 'L1', 'C0', or 'my'. These values describe the L2 norm (sqrt(sum(x*x))), L1 norm (sum(abs(x))), C norm (maxval(abs(x))), or user-defined norm (see NORM and LSQ functions). These expressions are not exact formulae for the norms, they do not take time into account and just give an idea.
+
+B<dt> is the time step.
+
+=head3 Public routines
+
+Routines that must be prepared in the module are: B<NextStep2layer>, B<INIT>, B<DONE>, B<READ_DATA>, B<Quantity>, B<Norm>, B<LSQ>, B<EarlyQuit>, B<IndependentVar>, B<Diagnost>.
+
+=head4 NextStep2layer
+
+This sub is the main one. It accepts three arguments: two scalar times, current and previous, and an 1D array containing the current state. Size of this array is n_unknowns, so it contains both grid distribution of spatially continous variables and time-dependent quantities. This array is INTENT(INOUT): the sub returns the new state there. So you need to convert the current state to the new state having only the previous time and the current time. All other info, including values of parameters, are globally available inside the module. Generated parameters are kept in global arrays params and int_params, you are free to convert them into convenient variabes of your own, private for the module. See the INIT sub. Utility modules are provided for solving boundary-value problems and connected tasks.
+
+=head4 INIT
+
+This sub is called prior to any calculation, but after generation of random parameters. Parameters are uniformly distributed between 0 and 1 or, if integer, are between 0 and 9. INIT can be used for conversion of these numbers to physically reasonable parameters (using e.g. the pre-defined function LINEAR) and storing them in variable with convenient names (e.g., D for diffusivity). Other tasks to be solved here are allocating auxiliary arrays, opening diagnostic files, evaluating control and diagnostic quantities like the total amount of matter in the beginning to check if conservation law holds.
+
+=head4 DONE
+
+This sub is the twin of the previous one. it clears up everything after the calculation. Closing files, checking conservation and other diagnostics, deallocating arrays are typical tasks for this sub.
+
+=head4 READ_DATA
+
+This routine must create and fill the ex_data array by, we expect, experimental data. The array can be allocated here also. Parameters can be used for, e.g., choosing a data file. For instance, one of the integer parameters can be the number of an experimental curve. One of the examples solves a simple problem of diffusion with known analytical solution; there this sub constructs the exact solution without any interction with the file system. 
+
+=head4 QUANTITY
+
+This function accepts time and all variables in a single 1D array. It returns the quantity to be compared with experimental data. For example, imagine that we solve the diffusion problem; we have the concentration distribution and descrbe its change in time. The measured quantity is the desorption flux, described in the model by the formula bc^2, where b is a parameter and c is concentration on the surface. So the function uses the value of b and the current distribution to evaluate this quantity.
+
+=head4 INDEPENDENTVAR
+
+This function accepts time and returns the x variable used in the experiment. Typically this is time, but time can be shifted or, as in electrochemical models, passed charge can be used instead of time. Or temperature is often used to study dehydriding under constant heating. Use your parametr and the current time to evalutate your independent variable.
+
+=head4 EARLYQUIT
+
+This logical function takes time and current state and checks different events of early quit. If .true. is returned, the calculation is stopped, the rest of time points are filled by the last balue of the quantity (so constant). The .false. value means 'continue calculation'. If no events are to be checked, just return .false.
+
+=head4 NORM and LSQ
+
+These functions accept time grid and grid function and are assumed to return the norm of this function. Use these functions if you have chosen 'my' for norming method specifiers called norming_method and space, respectfully. The result must be non-negative.
+
+=head4 DIAGNOST
+
+This routine is called after the body of each iteration of the loop. Use to to look what is happening.
+
+=head3 Private routines
+
+Feel free to write your own private routines; however, we prepared some for you hoping they can be useful. Among they are:
+
+=head4 LINEAR
+
+This function accepts the minimal and the maximal values of some quantity and a value between 0 and 1. It applies linear interpolation to produce the value. Use this function to convert random [0,1] parameters to physically reasonable ones.
+
+=head4 SURF and VOL
+
+functions accept 'radius' and return aurface area or volume of one of the shape: ball, cyliner of unit height (no butts), or flat plate of unit surface (cyliner with no lateral surface. Choice of the shape is done by private global variable sigma (2=ball, 1=cylinder, 0=plate). This sigma is also used for diffusion in spherical, cylindrical, or cartesian coordinates. In a more general approach to be implemented SURF and VOL would produce sigma for the diffusion equation in arbitrary symmetrical coordinates.
+
+
+=head2 Parabolic module
+
+This module contains routines for solving rather general diffusion problems with 1 spatial variable.
+
+The general idea is to solve a parabolic problem with equation dc/dt = Ac'' + Bc' - B1c' + Ec + F
+with boundary conditions of different types: Dirichlet conditions c=const, Neumann second kind conditions c'=const, linear Neumann third kind conditions like c'=a*c+b, or nonlinear Neumann conditions like c'=f(c). The problem is solved on a time span of size dt, i.e., on a single step. Global data, including parameters and time, are used inside functions for the PDE coefficients and right-hand side parts of the BCs. 
+The solvers perform the Thomas method and solve, if necessary nonlinear equation of equations for the boundary value(s).  
+
+=head3 PUBLIC ROUTINES
+
+=head4 derx(U,i, L, rho, dL, drho ) and derx1(U,i, L, rho, dL, drho )
+
+These functions return right or left grid derivative of a grid function. Both functions accept array with the grid function, index of the grid node, right and left ends of the span of the spatial variable, and time derivatives of these ends (so free boundaries are allowed). The last two arguments are optional and, in fact, not used in these functions. However, they are used in other, so they are declared for the sake of uniformity. The step of the spatial grid is evaluated under assumption that the grid is uniform.
+
+=head4 LRlin(dt, U, A,B,B1,E,F, LBCtype, LBC, RBCtype, RBC, L, rho, dL, drho )
+
+This routine solves a parabolic BVP on the time segment of size dt. Boundary conditions are linear, each is either of the Dirichlet type or of the Neumann kind (c'=const). Current distribution is kept in array U. The equation is Au'' + Bu' - B1u' + Eu + F = 0.
+All coefficients are supposed to be positive, though this is never used. In the scheme first derivative with coefficient B is right grid derivative, while that with B1 is the left grid derivative. Coefficients A, B, B1, E, and F are pure double precision functions with one integer argument: index of a grid node. To evaluate the value, you can use current time, parameters, and any other data global with respect to your module USER or your proceeder routine.
+LBCtype and RBCtype are integer specifiers of boundary conditions. Possible values are DIRICHLET_I and NEUMANN_II for the Dirichlet BC like c=const and the Neumann BC of the second kind: c'=const. LBC and RBC are pure functions with no arguments; they return the right-hand side of the boundary conditions. USe global data of the module to produce the right values. The final four arguments are the same as in the DER function. Also the final two are optional, but now they are used (default values are zero). Change of the spatial variable in order to eliminate the free boundary (if any) is done inside for you.  
+
+=head4 LLinRlin3(dt, U, A,B,B1,E,F, LBCtype, LBC, RBC, RBC1, L, rho, dL, drho  )
+
+This routine is similar to the previous one. It solves parabolic problems with linear boundary conditions; the left one is either Dirichlet or Neumann 2nd kind, the right is Neumann third kind: c' = Fc+G. Arguments are similar. There is no RBCtype now but an additional right-hand side function is passed. The condition is c' = RBC*c + RBC1.
+
+=head4 LLin3Rlin(dt, U, A,B,B1,E,F, LBC, LBC1, RBCtype, RBC, L, rho, dL, drho  )
+
+This routine is symmetrical with respect to the previous one. Now the right BC is linear Neumnann of the third kind, c'=LBC*c+LBC1, while the right BC is either Dirichlet or Neumann 2nd kind.
+
+=head4 LRlin3(dt, U, A,B,B1,E,F, LBC, LBC1, RBC, RBC1, L, rho, dL, drho  )
+
+This routine solves a problem with two Neumann 3d kind BC.
+
+=head4 LLinRnonlin(dt, U, A,B,B1,E,F, LBCtype, LBC, RBC, L, rho, dL, drho  )
+
+This routine solves a problem with the left linear BC of the Dirichlet type or Neumann type 2 kind and a non-linear Neumann right BC. RBC function is pure double precision with one double precision argument: it is the boundary value. So BC is c'=RBC(c). You need to evaluate the right-hand side given some c. The routine uses nonlinear equation solvers. 
+
+=head4 LLin3Rnonlin(dt, U, A,B,B1,E,F, LBC, LBC1, RBC, L, rho, dL, drho )
+
+This is similar to the previous, only the left BC is Neumann 3 kind: c' = LBC*c+LBC1.
+
+=head4 LNonlinRlin(dt, U, A,B,B1,E,F, LBC, RBCtype, RBC, L, rho, dL, drho  )
+
+This is completely symmetrical to LlinRnonlin.
+
+=head4 LNonlinRlin3(dt, U, A,B,B1,E,F, LBC, RBC, RBC1, L, rho, dL, drho )
+
+This is completely symmetrical to Llin3Rnonlin.
+
+=head4 LRnonlin(dt, U, A,B,B1,E,F, LBC, RBC, L, rho, dL, drho ) 
+
+This routine solves a problem with two nonlinear Neumann boundary conditions. So both BC look like c'=LBC(c) or c'=RBC(c).
+It uses iterative scheme to solve the system of two nonlinear equations. Laer we will, probably, develop other methods of solution. This must converge provided that right-hand side behave naturally at high values of their arguments.
+
+=head4 DLRlin(dt, U, D, curva, LBCtype, LBC, RBCtype, RBC, L, rho, dL, drho ) etc.
+
+A wrapper for the B<LRlin>: instead of the set of coefficients only D is passed.
+
+=head2 ODE module
+
+This module contais routines for solving systems of ordinary differential equations: dx/dt = f(t,x)
+Routines PredCorr1step(t, dt, Y, RHS) and Euler1step(t, dt, Y, RHS) make one temporal step using the predictor-corrector (AKA Crank-Nickolson) algorithm or the Euler scheme. They accept scalar current time, time step, 1D vector of the current state Y, and SUBROUTINE RightHandSide(t, U, dU); it takes time, 1D state, and returns time derivatives of the state in dU. Both routines return new state in the INTENT(INOUT) argument Y.
+
+Also the module contains other solvers, like Euler and PredCorr, but they are not used in the project and therefore not described here. See the code.
+
+=head2 Equations module
+
+This module is intended to contain solvers for algebraic nonlinear equations, scalar or vector. At the moment it contains only one solver for scalar nonlinear equations: 
+
+=head3                 SUBROUTINE dichotomy(func,X,ierr,left,right)
+
+This is the 'divide by two' or dichotomy method. Equation is F(x)=0 with scalar continuous function F. Argument func is pure double precision function with one double precision argument, it evaluates F. X is INTENT(OUT) argument for the result. ierr is also INTENT(OUT), integer error code. See section ERROR CODES. Last two arguments, left and right, are optional: these are ends of the span to look for the solution in. If given, then F must have different signs there. If omitted, they will be looked for, hopefully sucessfully.
+
+=head1 DIFFERENCES FOR OTHER THAN 2 LAYER SOLVERS
+
+=head2 0 layer solver
+
+Solves a non-evolutionary problem with no time: F(p) = J.
+
+The necessary public subs are only: INIT, DONE, READ_DATA, Quantity, Diagnost;
+
+Public variables are: N_params, N_int_params, params, int_params, threshold, ex_data
+
+READ_DATA must define the scalar ex_data; Quantity accepts one scalar intent(out) argument to return the value in it.
+ex_data is not an array but a scalar now. Quantity is now a "proceeder".
+
+=head2 1 layer solver
+
+Solves the evolutionary non-differential problems like F(t,p)=J.
+
+The only difference is that Nextstep1layer proceeder takes 1 time and intent(out) current state to be evaluated.
+
+=head2 n layer solver
+
+Use this for 3 layer schemes and other multi-layer schemes. The user module must provide also the nlayers constant for the number of layers.
+The proceeder called B<NextStepnlayer>  gets time vector up to nlayer long (can be less if less time steps have been passed) and 2D array of solution:
+all variables on up to nlayer layers. Also B<IndependentVar> and B<Quantity> subs receive that (the first only time). This differs from the 2-layer solver
+because there the Quantity is evaluated using only the current layer.
+
+=head2 All layer solver
+
+This is similar to the n layer solver, but all layers ready so far are passed to the proceeder called B<NextStepAlllayer>, the B<Quantity>, and (time only) B<IndependentVar>.
+
+=head1 EXAMPLES
+
+See the I<examples.pod> documentation.
+
+=cut
+
